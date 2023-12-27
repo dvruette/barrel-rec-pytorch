@@ -21,6 +21,11 @@ class QKVAttention(nn.Module):
         self.w_v = nn.Linear(d_model, d_model, bias=False)
         self.w_o = nn.Linear(d_model, d_model, bias=False)
 
+        self.w_q.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
+        self.w_k.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
+        self.w_v.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
+        self.w_o.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
+
     def forward(self, x: torch.Tensor, ctx: torch.Tensor = None):
         input_dtype = x.dtype
         if ctx is None:
