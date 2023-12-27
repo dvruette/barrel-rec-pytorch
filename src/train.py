@@ -11,63 +11,8 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from model import Transformer
+from data import get_shakespeare, get_wikitext
 
-
-def get_shakespeare(seq_len: int = 256):
-    ds = load_dataset("tiny_shakespeare")
-    # train split includes vocabulary for other splits
-    vocab = set()
-    for split in ds.keys():
-        for x in ds[split]:
-            vocab.update(x["text"])
-    vocab = ["<pad>"] + sorted(vocab)
-
-    token_to_id = {token: i for i, token in enumerate(vocab)}
-
-    def encode_and_chunk(batch):
-        input_ids, labels = [], []
-        for x in batch["text"]:
-            tokens = [token_to_id[token] for token in x]
-            for i in range(0, len(tokens) - 1, seq_len):
-                ts = tokens[i : i + seq_len + 1]
-                if len(ts) < seq_len + 1:
-                    # ts += [token_to_id["<pad>"]] * (seq_len + 1 - len(ts))
-                    continue
-                input_ids.append(ts[:-1])
-                labels.append(ts[1:])
-
-        
-        return {"input_ids": input_ids, "labels": labels}
-
-    ds = ds.map(encode_and_chunk, batched=True, remove_columns=["text"])
-    ds = ds.with_format("torch")
-    return ds, len(vocab)
-
-
-def get_wikitext(seq_len: int = 256, tokenizer: str = "gpt2"):
-    ds = load_dataset("wikitext", "wikitext-103-raw-v1")
-    tokenizer_id = tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_id)
-
-    def encode_and_chunk(batch, tokenizer=tokenizer_id, seq_len=seq_len):
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_id)
-        input_ids, labels = [], []
-        for x in batch["text"]:
-            tokens = tokenizer(x)["input_ids"]
-            for i in range(0, len(tokens) - 1, seq_len):
-                ts = tokens[i : i + seq_len + 1]
-                if len(ts) < seq_len + 1:
-                    # ts += [int(tokenizer.pad_token_id)] * (seq_len + 1 - len(ts))
-                    continue
-                input_ids.append(ts[:-1])
-                labels.append(ts[1:])
-
-        
-        return {"input_ids": input_ids, "labels": labels}
-    
-    ds = ds.map(encode_and_chunk, batched=True, remove_columns=["text"], num_proc=min(32, os.cpu_count()))
-    ds = ds.with_format("torch")
-    return ds, tokenizer.vocab_size
 
 def get_loss(model, batch, device):
     input_ids = batch["input_ids"].to(device)
@@ -76,6 +21,25 @@ def get_loss(model, batch, device):
     logits = model(input_ids)
     loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
     return loss
+
+def generate(model, tokenizer, device, max_seq_len=256, max_new_tokens=256, batch_size=1, do_sample=True):
+    model.eval()
+    with torch.no_grad():
+        input_ids = torch.zeros(batch_size, 1, dtype=torch.long, device=device).fill_(tokenizer.bos_token_id)
+        for i in range(max_new_tokens):
+            logits = model(input_ids)
+            logits = logits[:, -1, :]
+            if do_sample:
+                logits = torch.softmax(logits, dim=-1)
+                next_token_id = torch.multinomial(logits, num_samples=1)
+            else:
+                next_token_id = torch.argmax(logits, dim=-1, keepdim=True)
+            input_ids = torch.cat([input_ids, next_token_id], dim=1)
+            if (input_ids == tokenizer.eos_token_id).any(dim=-1).all():
+                break
+
+        texts = tokenizer.batch_decode(input_ids, skip_special_tokens=False)
+        return texts
 
 def parse_args():
     parser = ArgumentParser()
@@ -94,7 +58,7 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--eval_freq", type=int, default=500)
     parser.add_argument("--eval_batches", type=int, default=128)
@@ -112,10 +76,12 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+
     if args.dataset == "shakespeare":
         ds, vocab_size = get_shakespeare(args.max_seq_len)
     elif args.dataset == "wikitext":
-        ds, vocab_size = get_wikitext(args.max_seq_len)
+        ds, vocab_size = get_wikitext(args.max_seq_len, tokenizer=tokenizer.name_or_path)
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
@@ -142,6 +108,8 @@ def main(args):
     if args.wandb:
         wandb.init(entity=args.wandb_entity, project="barrel-rec", config=args)
         wandb.watch(model, log_freq=100)
+
+        gen_samples = wandb.Table(columns=["step", "loss", "sample_id", "text"])
 
     global_step = 0
     steps_per_epoch = len(train_dl) + min(args.eval_batches, len(val_dl))
@@ -194,12 +162,24 @@ def main(args):
                         stats["val_loss"] = sum(losses) / len(losses)
                         pbar.set_postfix(stats)
 
+                        samples = generate(
+                            model,
+                            tokenizer=tokenizer,
+                            device=device,
+                            max_seq_len=args.max_seq_len,
+                            max_new_tokens=128,
+                            batch_size=4,
+                            do_sample=True,
+                        )
+
+                        for i, sample in enumerate(samples):
+                            gen_samples.add_data(global_step, stats["val_loss"], i, sample)
+
 
                     if args.wandb:
                         wandb.log({
                             "val_loss": stats["val_loss"],
                         }, step=global_step)
-
 
 if __name__ == "__main__":
     args = parse_args()
