@@ -1,0 +1,66 @@
+import torch
+import torch.nn as nn
+
+from pscan import pscan
+
+
+class DumbRec(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        d_keys: int,
+        d_values: int,
+        num_attention_heads: int,
+        num_lines: int,
+        attention_dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.d_keys = d_keys
+        self.d_values = d_values
+        self.num_attention_heads = num_attention_heads
+        self.num_lines = num_lines
+        self.attention_dropout = attention_dropout
+
+        self.keys = nn.Parameter(0.02 * torch.randn(num_lines, d_keys), requires_grad=True)
+        self.v_init = nn.Parameter(torch.zeros(num_lines, d_values), requires_grad=True)
+
+        self.w_q_r = nn.Linear(d_model, d_keys * num_attention_heads, bias=False)
+        self.w_q_w = nn.Linear(d_model, d_keys * num_attention_heads, bias=False)
+        self.w_v = nn.Linear(d_model, d_values * num_attention_heads, bias=False)
+        self.w_o = nn.Linear(d_values * num_attention_heads, d_model, bias=False)
+
+    def forward(self, x: torch.Tensor):
+        input_dtype = x.dtype
+        queries_r = self.w_q_r(x)  # [batch_size, seq_len, num_heads * d_keys]
+        queries_w = self.w_q_w(x)  # [batch_size, seq_len, num_heads * d_keys]
+        values = self.w_v(x)  # [batch_size, seq_len, num_heads * d_values]
+
+        queries_r = queries_r.view(*queries_r.shape[:2], self.num_attention_heads, self.d_keys)
+        queries_w = queries_w.view(*queries_w.shape[:2], self.num_attention_heads, self.d_keys)
+        values = values.view(*values.shape[:2], self.num_attention_heads, self.d_values)  # [batch_size, seq_len, num_heads, d_values]
+
+        score_r = torch.einsum("blhd,md->blhm", queries_r, self.keys) / (self.d_keys ** 0.5)
+        score_w = torch.einsum("blhd,md->blhm", queries_w, self.keys) / (self.d_keys ** 0.5)
+
+        attn_r = score_r.to(torch.float32).softmax(dim=-1).to(input_dtype)  # [batch_size, seq_len, num_heads, num_lines]
+        attn_w = score_w.to(torch.float32).softmax(dim=-1).to(input_dtype)  # [batch_size, seq_len, num_heads, num_lines]
+
+        attn_r = nn.functional.dropout(attn_r, p=self.dropout, training=self.training)
+        attn_w = nn.functional.dropout(attn_w, p=self.dropout, training=self.training)
+
+        acc_vals = torch.einsum("blhm,blhd->blmd", attn_w, values)  # [batch_size, seq_len, num_lines, d_values]
+        alphas = (1 - attn_w).sum(dim=-2)  # [batch_size, seq_len]
+
+        acc_vals = acc_vals.transpose(1, 2).reshape(-1, *acc_vals.shape[2:])  # [batch_size * num_lines, seq_len, d_values]
+        alphas = alphas.unsqueeze(1).expand(-1, self.num_lines, -1).reshape(-1, *alphas.shape[1:])  # [batch_size * num_lines, seq_len]
+        v_init = self.v_init.unsqueeze(0).expand(acc_vals.shape[0], -1, -1)  # [batch_size * num_lines, d_values]
+
+        cum_vals = pscan(alphas, acc_vals, v_init)  # [batch_size * num_lines, seq_len, d_values]
+        cum_vals = cum_vals.view(-1, self.num_lines, *cum_vals.shape[1:])  # [batch_size, num_lines, seq_len, d_values]
+
+        result = torch.einsum("blhm,bmld->blhd", attn_r, cum_vals)  # [batch_size, seq_len, num_heads, d_values]
+        result = result.reshape(*result.shape[:2], -1)  # [batch_size, seq_len, num_heads * d_values]
+        result = self.w_o(result)
+
+        return result
