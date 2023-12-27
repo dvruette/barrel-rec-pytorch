@@ -1,4 +1,5 @@
 import os
+import time
 from argparse import ArgumentParser
 from datetime import datetime
 
@@ -76,7 +77,6 @@ def main(args):
     torch.manual_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
 
@@ -107,13 +107,17 @@ def main(args):
     train_dl = DataLoader(ds["train"], batch_size=args.batch_size, pin_memory=True, num_workers=4, shuffle=True)
     val_dl = DataLoader(ds["validation"], batch_size=args.batch_size, pin_memory=True, num_workers=4)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.999), eps=1e-12)
 
     if args.wandb:
         wandb.init(entity=args.wandb_entity, project="barrel-rec", config=args)
         wandb.watch(model, log_freq=100)
 
+    print(f"Using device: {device}")
+    print(f"Number of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.1f}M")
+
     global_step = 0
+    total_tokens = 0
     steps_per_epoch = len(train_dl) + min(args.eval_batches, len(val_dl))
     with tqdm.tqdm(total=args.epochs * steps_per_epoch) as pbar:
         stats = {}
@@ -122,11 +126,16 @@ def main(args):
 
             for batch in train_dl:
                 model.train()
+                start_time = time.time()
                 loss = get_loss(model, batch, device)
 
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+
+                time_taken = time.time() - start_time
+                toks_per_sec = batch["input_ids"].numel() / time_taken
+                total_tokens += batch["input_ids"].numel()
 
                 # plot gradient norm
                 norms = []
@@ -142,6 +151,8 @@ def main(args):
                         "train_loss": loss.item(),
                         "train_loss_ema": stats["train_loss"],
                         "grad_norm": np.mean(norms),
+                        "toks_per_sec": toks_per_sec,
+                        "total_tokens": total_tokens,
                         "epoch": epoch,
                     }, step=global_step)
 
