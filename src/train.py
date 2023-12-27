@@ -185,11 +185,11 @@ def main(args):
                             do_sample=True,
                         )
 
-                        gen_samples = wandb.Table(columns=["step", "loss", "sample_id", "text"])
+                        gen_samples = wandb.Table(columns=["step", "loss", "text"])
                         tqdm.tqdm.write(f"------------ {global_step=} ({datetime.strftime(datetime.now(), '%Y-%m-%d %H:%M:%S')}) ------------")
                         for i, sample in enumerate(samples):
                             tqdm.tqdm.write(f"[{i}] {sample}")
-                            gen_samples.add_data(global_step, stats["val_loss"], i, sample)
+                            gen_samples.add_data(global_step, stats["val_loss"], sample)
                         wandb.log({"samples": gen_samples}, step=global_step)
 
 
