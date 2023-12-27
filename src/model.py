@@ -3,6 +3,7 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
+from barrel_rec import BarrelRec
 from dumb_rec import DumbRec
 from qkv_attention import QKVAttention
 
@@ -42,7 +43,7 @@ class TransformerLayer(nn.Module):
         mlp_dropout: float = 0.0,
         residual_dropout: float = 0.0,
         is_causal: bool = True,
-        attn_type: Literal["qkv", "dumb_rec"] = "qkv",
+        attn_type: Literal["qkv", "dumb_rec", "barrel_rec"] = "qkv",
         ln_eps: float = 1e-8,
     ):
         super().__init__()
@@ -69,6 +70,19 @@ class TransformerLayer(nn.Module):
                 num_lines=num_lines,
                 attention_dropout=attention_dropout,
             )
+        elif attn_type == "barrel_rec":
+            if not is_causal:
+                raise ValueError("BarrelRec only supports causal attention")
+            self.attention = BarrelRec(
+                d_model=d_model,
+                d_keys=d_model // num_attention_heads,
+                d_values=d_model // num_attention_heads,
+                num_attention_heads=num_attention_heads,
+                num_lines=num_lines,
+                attention_dropout=attention_dropout,
+            )
+        else:
+            raise ValueError(f"Unknown attention type: {attn_type}")
         
         self.pre_norm = nn.LayerNorm(d_model, eps=ln_eps)
         self.post_norm = nn.LayerNorm(d_model, eps=ln_eps)
@@ -79,7 +93,7 @@ class TransformerLayer(nn.Module):
         x = self.pre_norm(x)
         if self.attn_type == "qkv":
             x = self.attention(x, ctx=ctx)
-        elif self.attn_type == "dumb_rec":
+        else:
             x = self.attention(x)
 
         x = nn.functional.dropout(x, p=self.residual_dropout, training=self.training)
