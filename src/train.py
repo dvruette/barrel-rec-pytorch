@@ -102,6 +102,8 @@ def main(args):
         ln_eps=args.ln_eps,
     ).to(device)
 
+    print(f"Number of parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
+
     train_dl = DataLoader(ds["train"], batch_size=args.batch_size, pin_memory=True, num_workers=4, shuffle=True)
     val_dl = DataLoader(ds["validation"], batch_size=args.batch_size, pin_memory=True, num_workers=4)
 
