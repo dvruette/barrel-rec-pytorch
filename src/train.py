@@ -14,6 +14,34 @@ from model import Transformer
 from data import get_shakespeare, get_wikitext
 
 
+def parse_args():
+    parser = ArgumentParser()
+    parser.add_argument("--dataset", type=str, default="shakespeare")
+    parser.add_argument("--d_model", type=int, default=512)
+    parser.add_argument("--mlp_expansion_factor", type=int, default=4)
+    parser.add_argument("--num_heads", type=int, default=8)
+    parser.add_argument("--num_layers", type=int, default=6)
+    parser.add_argument("--num_lines", type=int, default=64)
+    parser.add_argument("--attn_type", type=str, default="dumb_rec")
+    parser.add_argument("--attention_dropout", type=float, default=0.0)
+    parser.add_argument("--mlp_dropout", type=float, default=0.0)
+    parser.add_argument("--residual_dropout", type=float, default=0.0)
+    parser.add_argument("--ln_eps", type=float, default=1e-8)
+    parser.add_argument("--max_seq_len", type=int, default=256)
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--eval_freq", type=int, default=500)
+    parser.add_argument("--eval_batches", type=int, default=128)
+    parser.add_argument("--tokenizer", type=str, default="meta-llama/Llama-2-7b-hf")
+    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--wandb_entity", type=str, default="dvruette")
+
+    return parser.parse_args()
+
+
 def get_loss(model, batch, device):
     input_ids = batch["input_ids"].to(device)
     labels = batch["labels"].to(device)
@@ -41,32 +69,6 @@ def generate(model, tokenizer, device, max_seq_len=256, max_new_tokens=256, batc
         texts = tokenizer.batch_decode(input_ids, skip_special_tokens=False)
         return texts
 
-def parse_args():
-    parser = ArgumentParser()
-    parser.add_argument("--dataset", type=str, default="shakespeare")
-    parser.add_argument("--d_model", type=int, default=512)
-    parser.add_argument("--mlp_expansion_factor", type=int, default=4)
-    parser.add_argument("--num_heads", type=int, default=8)
-    parser.add_argument("--num_layers", type=int, default=6)
-    parser.add_argument("--num_lines", type=int, default=64)
-    parser.add_argument("--attn_type", type=str, default="dumb_rec")
-    parser.add_argument("--attention_dropout", type=float, default=0.0)
-    parser.add_argument("--mlp_dropout", type=float, default=0.0)
-    parser.add_argument("--residual_dropout", type=float, default=0.0)
-    parser.add_argument("--ln_eps", type=float, default=1e-8)
-    parser.add_argument("--max_seq_len", type=int, default=256)
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--weight_decay", type=float, default=0.0)
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--eval_freq", type=int, default=500)
-    parser.add_argument("--eval_batches", type=int, default=128)
-    parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--wandb_entity", type=str, default="dvruette")
-
-    return parser.parse_args()
-
 def main(args):
     if args.wandb:
         import wandb
@@ -76,10 +78,10 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
 
     if args.dataset == "shakespeare":
-        ds, vocab_size = get_shakespeare(args.max_seq_len)
+        ds, vocab_size = get_shakespeare(args.max_seq_len, tokenizer=tokenizer.name_or_path)
     elif args.dataset == "wikitext":
         ds, vocab_size = get_wikitext(args.max_seq_len, tokenizer=tokenizer.name_or_path)
     else:
@@ -108,8 +110,6 @@ def main(args):
     if args.wandb:
         wandb.init(entity=args.wandb_entity, project="barrel-rec", config=args)
         wandb.watch(model, log_freq=100)
-
-        gen_samples = wandb.Table(columns=["step", "loss", "sample_id", "text"])
 
     global_step = 0
     steps_per_epoch = len(train_dl) + min(args.eval_batches, len(val_dl))
@@ -172,8 +172,12 @@ def main(args):
                             do_sample=True,
                         )
 
+                        gen_samples = wandb.Table(columns=["step", "loss", "sample_id", "text"])
+                        tqdm.tqdm.write(f"------------ {global_step=} ({datetime.strftime(datetime.now(), '%Y-%m-%d %H:%M:%S')}) ------------")
                         for i, sample in enumerate(samples):
+                            tqdm.tqdm.write(f"[{i}] {sample}")
                             gen_samples.add_data(global_step, stats["val_loss"], i, sample)
+                        wandb.log({"samples": gen_samples}, step=global_step)
 
 
                     if args.wandb:
