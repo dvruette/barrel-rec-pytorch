@@ -3,3 +3,4 @@ numpy
 datasets
 tqdm
 wandb
+transformers
