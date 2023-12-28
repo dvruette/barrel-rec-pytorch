@@ -21,11 +21,6 @@ class QKVAttention(nn.Module):
         self.w_v = nn.Linear(d_model, d_model, bias=False)
         self.w_o = nn.Linear(d_model, d_model, bias=False)
 
-        self.w_q.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
-        self.w_k.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
-        self.w_v.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
-        self.w_o.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
-
     def forward(self, x: torch.Tensor, ctx: torch.Tensor = None):
         input_dtype = x.dtype
         if ctx is None:
@@ -35,11 +30,12 @@ class QKVAttention(nn.Module):
         keys = self.w_k(ctx)
         values = self.w_v(ctx)
 
-        queries = queries.view(*queries.shape[:2], self.num_attention_heads, self.d_model // self.num_attention_heads)
-        keys = keys.view(*keys.shape[:2], self.num_attention_heads, self.d_model // self.num_attention_heads)
-        values = values.view(*values.shape[:2], self.num_attention_heads, self.d_model // self.num_attention_heads)
+        queries = queries.view(*queries.shape[:2], self.num_attention_heads, self.d_model // self.num_attention_heads).transpose(1, 2)
+        keys = keys.view(*keys.shape[:2], self.num_attention_heads, self.d_model // self.num_attention_heads).transpose(1, 2)
+        values = values.view(*values.shape[:2], self.num_attention_heads, self.d_model // self.num_attention_heads).transpose(1, 2)
 
-        attn_score = torch.einsum("bnhd,bmhd->bnhm", queries, keys)
+        # attn_score = torch.einsum("bhnd,bhmd->bhnm", queries, keys)
+        attn_score = torch.matmul(queries, keys.transpose(-2, -1))
         attn_score = attn_score / (self.d_model // self.num_attention_heads) ** 0.5
 
         if self.is_causal:
@@ -49,8 +45,9 @@ class QKVAttention(nn.Module):
         attn_weights = attn_score.to(torch.float32).softmax(dim=-1).to(input_dtype)
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
 
-        output = torch.einsum("bnhm,bmhd->bnhd", attn_weights, values)
-        output = output.reshape(*output.shape[:2], self.d_model)
+        # output = torch.einsum("bhnm,bhmd->bhnd", attn_weights, values)
+        output = torch.matmul(attn_weights, values)
+        output = output.transpose(1, 2).reshape(*x.shape[:2], self.d_model)
         output = self.w_o(output)
 
         return output

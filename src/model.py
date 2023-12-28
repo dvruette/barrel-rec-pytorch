@@ -23,6 +23,11 @@ class MLP(nn.Module):
         self.w_1 = nn.Linear(d_model, d_model * expansion_factor)
         self.w_2 = nn.Linear(d_model * expansion_factor, d_model)
 
+        # self.w_1.weight.data.normal_(mean=0.0, std=0.02)
+        # self.w_2.weight.data.normal_(mean=0.0, std=0.02)
+        # self.w_1.bias.data.fill_(0.0)
+        # self.w_2.bias.data.fill_(0.0)
+
     def forward(self, x: torch.Tensor):
         output = self.w_1(x)
         output = nn.functional.gelu(output)
@@ -87,6 +92,11 @@ class TransformerLayer(nn.Module):
         self.pre_norm = nn.LayerNorm(d_model, eps=ln_eps)
         self.post_norm = nn.LayerNorm(d_model, eps=ln_eps)
         self.mlp = MLP(d_model, expansion_factor=mlp_expansion_factor, dropout=mlp_dropout)
+
+        # self.pre_norm.weight.data.fill_(1.0)
+        # self.pre_norm.bias.data.fill_(0.0)
+        # self.post_norm.weight.data.fill_(1.0)
+        # self.post_norm.bias.data.fill_(0.0)
 
     def forward(self, x: torch.Tensor, ctx: torch.Tensor = None):
         residual = x
@@ -159,6 +169,26 @@ class Transformer(nn.Module):
 
         self.norm = nn.LayerNorm(d_model, eps=ln_eps)
         self.out = nn.Linear(d_model, vocab_size, bias=False)
+
+        self.init_weights()
+
+    def init_weights(self):
+        init_range = 0.02
+
+        self.embedding.weight.data.normal_(mean=0.0, std=init_range)
+        self.pos_embedding.data.normal_(mean=0.0, std=init_range)
+
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Linear):
+                module.weight.data.normal_(mean=0.0, std=init_range)
+                if module.bias is not None:
+                    module.bias.data.fill_(0.0)
+                if "w_o" in name:
+                    # module.weight.data.copy_(torch.eye(self.d_model))
+                    module.weight.data.normal_(mean=0.0, std=init_range / (2*self.num_layers) ** 0.5)
+            elif isinstance(module, nn.LayerNorm):
+                module.weight.data.fill_(1.0)
+                module.bias.data.fill_(0.0)
 
     def forward(self, x: torch.Tensor):
         x = self.embedding(x)
