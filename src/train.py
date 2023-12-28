@@ -90,7 +90,7 @@ def generate_custom(model, tokenizer, device, max_seq_len=256, max_new_tokens=25
             if (input_ids == tokenizer.eos_token_id).any(dim=-1).all():
                 break
 
-        texts = tokenizer.batch_decode(input_ids, skip_special_tokens=False)
+        texts = tokenizer.batch_decode(input_ids, skip_special_tokens=False, clean_up_tokenization_spaces=True)
         return texts
 
 def generate_hf(model, tokenizer, device, max_seq_len=256, max_new_tokens=256, batch_size=1, do_sample=True):
@@ -109,7 +109,7 @@ def generate_hf(model, tokenizer, device, max_seq_len=256, max_new_tokens=256, b
             if (input_ids == tokenizer.eos_token_id).any(dim=-1).all():
                 break
 
-        texts = tokenizer.batch_decode(input_ids, skip_special_tokens=False)
+        texts = tokenizer.batch_decode(input_ids, skip_special_tokens=False, clean_up_tokenization_spaces=True)
         return texts
 
 
