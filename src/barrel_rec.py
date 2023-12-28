@@ -36,7 +36,8 @@ class BarrelRec(nn.Module):
         self.w_q_r.weight.data.normal_(mean=0.0, std=d_keys ** -0.5)
         self.w_q_w.weight.data.normal_(mean=0.0, std=d_keys ** -0.5)
         self.w_v.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
-        self.w_o.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
+        # self.w_o.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
+        self.w_o.weight.data.copy_(torch.eye(d_model))
 
     def forward(self, x: torch.Tensor):
         input_dtype = x.dtype

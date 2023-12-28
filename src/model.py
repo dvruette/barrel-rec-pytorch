@@ -174,21 +174,21 @@ class Transformer(nn.Module):
 
     def init_weights(self):
         init_range = 0.02
-
         self.embedding.weight.data.normal_(mean=0.0, std=init_range)
         self.pos_embedding.data.normal_(mean=0.0, std=init_range)
 
-        for name, module in self.named_modules():
-            if isinstance(module, nn.Linear):
-                module.weight.data.normal_(mean=0.0, std=init_range)
-                if module.bias is not None:
+        if self.attn_type == "qkv":
+            for name, module in self.named_modules():
+                if isinstance(module, nn.Linear):
+                    module.weight.data.normal_(mean=0.0, std=init_range)
+                    if module.bias is not None:
+                        module.bias.data.fill_(0.0)
+                    if "w_o" in name:
+                        # module.weight.data.copy_(torch.eye(self.d_model))
+                        module.weight.data.normal_(mean=0.0, std=init_range / (2*self.num_layers) ** 0.5)
+                if isinstance(module, nn.LayerNorm):
+                    module.weight.data.fill_(1.0)
                     module.bias.data.fill_(0.0)
-                if "w_o" in name:
-                    # module.weight.data.copy_(torch.eye(self.d_model))
-                    module.weight.data.normal_(mean=0.0, std=init_range / (2*self.num_layers) ** 0.5)
-            elif isinstance(module, nn.LayerNorm):
-                module.weight.data.fill_(1.0)
-                module.bias.data.fill_(0.0)
 
     def forward(self, x: torch.Tensor):
         x = self.embedding(x)
