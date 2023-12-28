@@ -1,6 +1,7 @@
 import os
 
-from datasets import load_dataset
+import torch
+from datasets import load_dataset, Dataset
 from transformers import AutoTokenizer
 
 
@@ -18,7 +19,6 @@ def _get_encode_and_chunk_fn(tokenizer_id: str = "gpt2", seq_len: int = 256):
                 input_ids.append(ts[:-1])
                 labels.append(ts[1:])
 
-        
         return {"input_ids": input_ids, "labels": labels}
     return encode_and_chunk
 
@@ -34,15 +34,27 @@ def process_dataset(ds, seq_len: int = 256, tokenizer: str = "gpt2"):
         num_proc=min(32, os.cpu_count()),
         # cache_file_names={split: f"wikitext-103-raw-v1_{split=}_{tokenizer=}_{seq_len=}".replace("/", "-") for split in ds},
     )
-    ds = ds.with_format("torch")
     return ds, tokenizer.vocab_size
 
 
 def get_shakespeare(seq_len: int = 256, tokenizer: str = "gpt2"):
     ds = load_dataset("tiny_shakespeare")
-    return process_dataset(ds, seq_len, tokenizer)
+    ds, vocab_size = process_dataset(ds, seq_len, tokenizer)
+    return ds.with_format("torch"), vocab_size
 
 
 def get_wikitext(seq_len: int = 256, tokenizer: str = "gpt2"):
     ds = load_dataset("wikitext", "wikitext-103-raw-v1")
-    return process_dataset(ds, seq_len, tokenizer)
+    ds, vocab_size = process_dataset(ds, seq_len, tokenizer)
+    return ds.with_format("torch"), vocab_size
+
+
+def get_repetition_task(seq_len: int = 256, vocab_size: int = 1000, num_samples: int = 100_000):
+    tokens = torch.randint(0, vocab_size, (num_samples, seq_len // 2))
+    tokens = torch.cat([tokens, tokens], dim=-1)
+    input_ids = tokens[:, :-1]
+    labels = tokens[:, 1:]
+
+    ds = Dataset.from_dict({"input_ids": input_ids.tolist(), "labels": labels.tolist()})
+    ds = ds.train_test_split(test_size=0.2)
+    return ds.with_format("torch"), vocab_size
