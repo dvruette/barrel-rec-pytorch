@@ -25,8 +25,7 @@ class BarrelRec(nn.Module):
         if not d_values * num_attention_heads == d_model:
             raise ValueError("d_values * num_attention_heads must equal d_model")
 
-        # self.keys = nn.Parameter(0.02 * torch.randn(num_lines, d_keys), requires_grad=True)
-        self.keys = nn.Parameter(torch.zeros(num_lines, d_keys), requires_grad=True)
+        self.keys = nn.Parameter(d_keys ** -0.5 * torch.randn(num_lines, d_keys), requires_grad=True)
         self.v_init = nn.Parameter(torch.zeros(num_lines, d_values), requires_grad=True)
 
         self.w_q_r = nn.Linear(d_model, d_keys * num_attention_heads, bias=False)
@@ -34,8 +33,8 @@ class BarrelRec(nn.Module):
         self.w_v = nn.Linear(d_model, d_values * num_attention_heads, bias=False)
         self.w_o = nn.Linear(d_values * num_attention_heads, d_model, bias=False)
 
-        self.w_q_r.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
-        self.w_q_w.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
+        self.w_q_r.weight.data.normal_(mean=0.0, std=d_keys ** -0.5)
+        self.w_q_w.weight.data.normal_(mean=0.0, std=d_keys ** -0.5)
         self.w_v.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
         self.w_o.weight.data.normal_(mean=0.0, std=d_model ** -0.5)
 
