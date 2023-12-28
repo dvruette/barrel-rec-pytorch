@@ -23,8 +23,8 @@ def parse_args():
     parser.add_argument("--mlp_expansion_factor", type=int, default=4)
     parser.add_argument("--num_heads", type=int, default=8)
     parser.add_argument("--num_layers", type=int, default=6)
-    parser.add_argument("--num_lines", type=int, default=64)
-    parser.add_argument("--attn_type", type=str, default="dumb_rec")
+    parser.add_argument("--num_lines", type=int, default=128)
+    parser.add_argument("--attn_type", type=str, default="barrel_rec")
     parser.add_argument("--attention_dropout", type=float, default=0.0)
     parser.add_argument("--mlp_dropout", type=float, default=0.0)
     parser.add_argument("--residual_dropout", type=float, default=0.0)
@@ -98,7 +98,7 @@ def generate_hf(model, tokenizer, device, max_seq_len=256, max_new_tokens=256, b
     with torch.no_grad():
         input_ids = torch.zeros(batch_size, 1, dtype=torch.long, device=device).fill_(tokenizer.bos_token_id)
         for i in range(max_new_tokens):
-            output = model(input_ids=input_ids)
+            output = model(input_ids=input_ids[:, -max_seq_len:])
             logits = output.logits[:, -1, :]
             if do_sample:
                 logits = torch.softmax(logits, dim=-1)
@@ -206,6 +206,12 @@ def main(args):
                 loss = get_loss(model_type, model, batch, device)
                 loss.backward()
 
+                # plot gradient norm
+                norms = []
+                for p in model.parameters():
+                    if p.grad is not None:
+                        norms.append(p.grad.norm().item())
+
                 if (global_step + 1) % args.accumulate_grad_batches == 0:
                     optimizer.step()
                     optimizer.zero_grad()
@@ -215,11 +221,6 @@ def main(args):
                 toks_per_sec = batch["input_ids"].numel() / time_taken
                 total_tokens += batch["input_ids"].numel()
 
-                # plot gradient norm
-                norms = []
-                for p in model.parameters():
-                    if p.grad is not None:
-                        norms.append(p.grad.norm().item())
 
                 stats["train_loss"] = 0.9 * stats.get("train_loss", loss.item()) + 0.1 * loss.item()
 
@@ -266,12 +267,15 @@ def main(args):
                                 do_sample=True,
                             )
 
-                            gen_samples = wandb.Table(columns=["step", "loss", "text"])
                             tqdm.tqdm.write(f"------------ {global_step=} ({datetime.strftime(datetime.now(), '%Y-%m-%d %H:%M:%S')}) ------------")
                             for i, sample in enumerate(samples):
-                                tqdm.tqdm.write(f"[{i}] {sample}")
-                                gen_samples.add_data(global_step, stats["val_loss"], sample)
-                            wandb.log({"samples": gen_samples}, step=step)
+                                    tqdm.tqdm.write(f"[{i}] {sample}")
+
+                            if args.wandb:
+                                gen_samples = wandb.Table(columns=["step", "loss", "text"])
+                                for i, sample in enumerate(samples):
+                                    gen_samples.add_data(global_step, stats["val_loss"], sample)
+                                wandb.log({"samples": gen_samples}, step=step)
 
 
                     if args.wandb:
