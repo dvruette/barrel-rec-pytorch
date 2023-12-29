@@ -24,7 +24,7 @@ def parse_args():
     parser.add_argument("--num_heads", type=int, default=8)
     parser.add_argument("--num_layers", type=int, default=6)
     parser.add_argument("--num_lines", type=int, default=128)
-    parser.add_argument("--attn_type", type=str, default="barrel_rec")
+    parser.add_argument("--attn_type", type=str, default="dumb_rec")
     parser.add_argument("--attention_dropout", type=float, default=0.0)
     parser.add_argument("--mlp_dropout", type=float, default=0.0)
     parser.add_argument("--residual_dropout", type=float, default=0.0)
@@ -34,6 +34,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--dtype", type=str, default="fp32")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--eval_freq", type=int, default=500)
     parser.add_argument("--eval_batches", type=int, default=128)
@@ -43,6 +44,18 @@ def parse_args():
     parser.add_argument("--wandb_entity", type=str, default="dvruette")
 
     return parser.parse_args()
+
+
+def parse_dtype(dtype):
+    if dtype == "fp32":
+        return torch.float32
+    elif dtype == "fp16":
+        return torch.float16
+    elif dtype == "bf16":
+        return torch.bfloat16
+    else:
+        raise ValueError(f"Unknown dtype: {dtype}")
+
 
 def get_loss(model_type, model, batch, device):
     if model_type == "hf":
@@ -117,6 +130,7 @@ def main(args):
     output_dir = Path(f"outputs/{datetime.strftime(datetime.now(), '%Y-%m-%d/%H-%M-%S')}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
+
     with open(output_dir / "args.json", "w") as f:
         json.dump(vars(args), f, indent=2)
 
@@ -126,6 +140,7 @@ def main(args):
     torch.manual_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dtype = parse_dtype(args.dtype)
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
 
@@ -178,6 +193,7 @@ def main(args):
     val_dl = DataLoader(val_ds, batch_size=args.batch_size, pin_memory=True, num_workers=4)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.98), eps=1e-12)
+    scaler = torch.cuda.amp.GradScaler(enabled=args.dtype != "fp32")
 
     if args.wandb:
         wandb.init(
@@ -189,6 +205,7 @@ def main(args):
         wandb.watch(model, log_freq=100)
 
     print(f"Using device: {device}")
+    print(f"Using dtype: {dtype}")
     print(f"Number of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.1f}M")
 
     global_step = 0
@@ -203,17 +220,19 @@ def main(args):
             for batch in train_dl:
                 model.train()
                 start_time = time.time()
-                loss = get_loss(model_type, model, batch, device)
-                loss.backward()
+                with torch.cuda.amp.autocast(dtype=dtype, enabled=args.dtype != "fp32"):
+                    loss = get_loss(model_type, model, batch, device)
+                scaler.scale(loss).backward()
 
                 # plot gradient norm
                 norms = []
                 for p in model.parameters():
                     if p.grad is not None:
-                        norms.append(p.grad.norm().item())
+                        norms.append(p.grad.norm().float().item())
 
                 if (global_step + 1) % args.accumulate_grad_batches == 0:
-                    optimizer.step()
+                    scaler.step(optimizer)
+                    scaler.update()
                     optimizer.zero_grad()
                     step += 1
 
@@ -221,20 +240,19 @@ def main(args):
                 toks_per_sec = batch["input_ids"].numel() / time_taken
                 total_tokens += batch["input_ids"].numel()
 
+                if not torch.isnan(loss).any():
+                    stats["train_loss"] = 0.9 * stats.get("train_loss", loss.item()) + 0.1 * loss.item()
 
-                stats["train_loss"] = 0.9 * stats.get("train_loss", loss.item()) + 0.1 * loss.item()
-
-
-                if args.wandb:
-                    wandb.log({
-                        "train_loss": loss.item(),
-                        "train_loss_ema": stats["train_loss"],
-                        "grad_norm": np.mean(norms),
-                        "toks_per_sec": toks_per_sec,
-                        "total_tokens": total_tokens,
-                        "global_step": global_step,
-                        "epoch": epoch,
-                    }, step=step)
+                    if args.wandb:
+                        wandb.log({
+                            "train_loss": loss.item(),
+                            "train_loss_ema": stats["train_loss"],
+                            "grad_norm": np.mean(norms),
+                            "toks_per_sec": toks_per_sec,
+                            "total_tokens": total_tokens,
+                            "global_step": global_step,
+                            "epoch": epoch,
+                        }, step=step)
 
                 global_step += 1
                 pbar.update(1)
