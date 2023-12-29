@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from pscan import pscan
+from pscan_fft import pscan_fft
 
 
 class DumbRec(nn.Module):
@@ -67,7 +68,8 @@ class DumbRec(nn.Module):
         alphas = alphas.transpose(1, 2).reshape(bs * self.num_lines, seq_len)  # [batch_size * num_lines, seq_len]
         v_init = self.v_init.unsqueeze(0).expand(bs, -1, -1).reshape(bs * self.num_lines, self.d_values)  # [batch_size * num_lines, d_values]
 
-        cum_vals = pscan(alphas.to(torch.float64), acc_vals.to(torch.float64), v_init.to(torch.float64))  # [batch_size * num_lines, seq_len, d_values]
+        cum_vals = pscan(alphas.to(torch.float32), acc_vals.to(torch.float32), v_init.to(torch.float32))  # [batch_size * num_lines, seq_len, d_values]
+        # cum_vals = pscan_fft(alphas.to(torch.float32), acc_vals.to(torch.float32))
         cum_vals = cum_vals.view(-1, self.num_lines, *cum_vals.shape[1:]).to(input_dtype)  # [batch_size, num_lines, seq_len, d_values]
 
         result = torch.einsum("blhm,bmld->blhd", attn_r, cum_vals)  # [batch_size, seq_len, num_heads, d_values]
