@@ -2,7 +2,7 @@ import torch
 
 """
 FFT-based implementation of PSCAN by Maxim Zubkov
-https://github.com/maximzubkov/fft-scan/blob/main/fft-scan.ipynb
+https://github.com/maximzubkov/fft-scan/src/fft_efficient.py
 """
 
 def L_at_X(X):
