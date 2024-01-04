@@ -33,11 +33,13 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--adam_beta2", type=float, default=0.999)
+    parser.add_argument("--adam_eps", type=float, default=1e-12)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--dtype", type=str, default="fp32")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--eval_freq", type=int, default=500)
-    parser.add_argument("--eval_batches", type=int, default=128)
+    parser.add_argument("--eval_batches", type=int, default=256)
     parser.add_argument("--accumulate_grad_batches", type=int, default=1)
     parser.add_argument("--tokenizer", type=str, default="meta-llama/Llama-2-7b-hf")
     parser.add_argument("--wandb", action="store_true")
@@ -219,7 +221,7 @@ def main(args):
     train_dl = DataLoader(ds["train"], batch_size=args.batch_size, pin_memory=True, num_workers=4, shuffle=True)
     val_dl = DataLoader(val_ds, batch_size=args.batch_size, pin_memory=True, num_workers=4)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.98), eps=1e-12)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, args.adam_beta2), eps=args.adam_eps)
     scaler = torch.cuda.amp.GradScaler(enabled=args.dtype != "fp32")
 
     if args.wandb:
