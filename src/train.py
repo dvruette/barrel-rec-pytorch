@@ -13,12 +13,12 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, GPT2LMHeadModel, GPT2Config
 
 from model import Transformer
-from data import get_shakespeare, get_wikitext, get_repetition_task
+from data import get_shakespeare, get_wikitext, get_repetition_task, get_slim_pajama, get_grid_task
 
 
 def parse_args():
     parser = ArgumentParser()
-    parser.add_argument("--dataset", type=str, default="shakespeare")
+    parser.add_argument("--dataset", type=str, default="slim_pajama")
     parser.add_argument("--d_model", type=int, default=512)
     parser.add_argument("--mlp_expansion_factor", type=int, default=4)
     parser.add_argument("--num_heads", type=int, default=8)
@@ -42,6 +42,7 @@ def parse_args():
     parser.add_argument("--tokenizer", type=str, default="meta-llama/Llama-2-7b-hf")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb_entity", type=str, default="dvruette")
+    parser.add_argument("--device", type=str, default="auto")
 
     return parser.parse_args()
 
@@ -58,25 +59,15 @@ def parse_dtype(dtype):
 
 
 def get_loss(model_type, model, batch, device):
+    input_ids = batch["input_ids"].to(device)
+    labels = batch["labels"].to(device)
+
     if model_type == "hf":
-        return get_loss_hf(model, batch, device)
+        output = model(input_ids=input_ids)
+        logits = output.logits
     else:
-        return get_loss_custom(model, batch, device)
+        logits = model(input_ids)
 
-def get_loss_custom(model, batch, device):
-    input_ids = batch["input_ids"].to(device)
-    labels = batch["labels"].to(device)
-
-    logits = model(input_ids)
-    loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
-    return loss
-
-def get_loss_hf(model, batch, device):
-    input_ids = batch["input_ids"].to(device)
-    labels = batch["labels"].to(device)
-
-    output = model(input_ids=input_ids)
-    logits = output.logits
     loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
     return loss
 
@@ -126,6 +117,29 @@ def generate_hf(model, tokenizer, device, max_seq_len=256, max_new_tokens=256, b
         return texts
 
 
+def evaluate_grid(model_type, model, ans_token_id, batch, device):
+    model.eval()
+    with torch.no_grad():
+        input_ids = batch["input_ids"].to(device)
+        labels = batch["labels"].to(device)
+
+        if model_type == "hf":
+            output = model(input_ids=input_ids)
+            logits = output.logits
+        else:  # model_type == "custom"
+            logits = model(input_ids)
+        loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+
+        # compute accuracy only on ans tokens
+        ans_token_ids = (input_ids == ans_token_id).nonzero(as_tuple=True)
+        logs = logits[ans_token_ids]
+        labs = labels[ans_token_ids]
+        preds = torch.argmax(logs, dim=-1)
+        acc = (preds == labs).float().mean().item()
+
+        return loss, acc
+
+
 def main(args):
     output_dir = Path(f"outputs/{datetime.strftime(datetime.now(), '%Y-%m-%d/%H-%M-%S')}")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -138,18 +152,31 @@ def main(args):
         import wandb
 
     torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
     dtype = parse_dtype(args.dtype)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+    if args.dataset == "grid":
+        tokenizer = None
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
 
     if args.dataset == "shakespeare":
         ds, vocab_size = get_shakespeare(args.max_seq_len, tokenizer=tokenizer.name_or_path)
     elif args.dataset == "wikitext":
         ds, vocab_size = get_wikitext(args.max_seq_len, tokenizer=tokenizer.name_or_path)
+    elif args.dataset == "slim_pajama":
+        ds, vocab_size = get_slim_pajama(args.max_seq_len, tokenizer=tokenizer.name_or_path)
     elif args.dataset == "repetition":
         ds, vocab_size = get_repetition_task(args.max_seq_len)
+    elif args.dataset == "grid":
+        ds, vocab = get_grid_task(args.max_seq_len, num_workers=min(32, os.cpu_count()), num_samples=100_000)
+        vocab_size = len(vocab)
+        ans_token_id = vocab.index("<ans>")
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
@@ -165,8 +192,8 @@ def main(args):
             attn_pdrop=args.attention_dropout,
             resid_pdrop=args.residual_dropout,
             layer_norm_eps=args.ln_eps,
-            bos_token_id=tokenizer.bos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
+            bos_token_id=tokenizer.bos_token_id if tokenizer else 0,
+            eos_token_id=tokenizer.eos_token_id if tokenizer else 0,
         )
         model = GPT2LMHeadModel(model_config).to(device)
     else:
@@ -200,7 +227,7 @@ def main(args):
             entity=args.wandb_entity,
             project="barrel-rec",
             config=args,
-            tags=[args.attn_type, args.dataset, args.tokenizer],
+            tags=[args.attn_type, args.dataset] + ([tokenizer.name_or_path] if tokenizer else []),
         )
         wandb.watch(model, log_freq=100)
 
@@ -262,18 +289,27 @@ def main(args):
                     model.eval()
                     with torch.no_grad():
                         losses = []
+                        accs = []
                         for i, batch in enumerate(val_dl):
                             if i >= args.eval_batches:
                                 break
-                            loss = get_loss(model_type, model, batch, device)
+                            if args.dataset in ["grid"]:
+                                loss, acc = evaluate_grid(model_type, model, ans_token_id, batch, device)
+                                accs.append(acc)
+                            else:
+                                loss = get_loss(model_type, model, batch, device)
 
                             losses.append(loss.item())
 
                             pbar.update(1)
-                        stats["val_loss"] = sum(losses) / len(losses)
+                        
+                        if len(losses) > 0:
+                            stats["val_loss"] = sum(losses) / len(losses)
+                        if len(accs) > 0:
+                            stats["val_acc"] = sum(accs) / len(accs)
                         pbar.set_postfix(stats)
 
-                        if args.dataset != "repetition":
+                        if args.dataset not in ["repetition", "grid"]:
                             samples = generate(
                                 model_type,
                                 model,
@@ -296,9 +332,10 @@ def main(args):
                                 wandb.log({"samples": gen_samples}, step=step)
 
 
+
                     if args.wandb:
                         wandb.log({
-                            "val_loss": stats["val_loss"],
+                            key: stats[key] for key in ["val_loss", "val_acc"] if key in stats
                         }, step=step)
                     
                     torch.save(model.state_dict(), output_dir / "model.pt")

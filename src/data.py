@@ -1,8 +1,11 @@
 import os
 
 import torch
+import tqdm
 from datasets import load_dataset, Dataset
 from transformers import AutoTokenizer
+
+from grid import GridFactory
 
 
 def _get_encode_and_chunk_fn(tokenizer_id: str = "gpt2", seq_len: int = 256):
@@ -49,12 +52,38 @@ def get_wikitext(seq_len: int = 256, tokenizer: str = "gpt2"):
     return ds.with_format("torch"), vocab_size
 
 
-def get_repetition_task(seq_len: int = 256, vocab_size: int = 1000, num_samples: int = 100_000):
+def get_slim_pajama(seq_len: int = 256, tokenizer: str = "gpt2"):
+    ds = load_dataset("DKYoon/SlimPajama-6B")
+    ds = ds.remove_columns(["meta", "__index_level_0__"])
+    ds, vocab_size = process_dataset(ds, seq_len, tokenizer)
+    return ds.with_format("torch"), vocab_size
+
+
+def get_repetition_task(seq_len: int = 256, vocab_size: int = 1000, num_samples: int = 100_000, test_size: float = 0.2):
     tokens = torch.randint(0, vocab_size, (num_samples, seq_len // 2))
     tokens = torch.cat([tokens, tokens], dim=-1)
     input_ids = tokens[:, :-1]
     labels = tokens[:, 1:]
 
     ds = Dataset.from_dict({"input_ids": input_ids.tolist(), "labels": labels.tolist()})
-    ds = ds.train_test_split(test_size=0.2)
+    ds = ds.train_test_split(test_size=test_size)
     return ds.with_format("torch"), vocab_size
+
+
+def get_grid_task(max_seq_len: int = 256, grid_size: int = 6, num_samples: int = 250_000, test_size: float = 0.1, num_workers: int = 1):
+    grid_factory = GridFactory(size=grid_size)
+    samples = grid_factory.generate_samples(num_samples, show_progress=True, num_workers=num_workers)
+    words = [x.strip().split() for x in samples]
+    max_len = max(len(xs) for xs in words)
+    if max_len > max_seq_len:
+        raise ValueError(f"max_seq_len={max_seq_len} is too small for the grid task. The longest sequence is {max_len} words long.")
+    
+    vocab = ["<pad>"] + sorted(set([x for xs in words for x in xs]))
+    word_to_id = {w: i for i, w in enumerate(vocab)}
+    tokens = [[word_to_id[w]  for w in xs] + [word_to_id["<pad>"]] * (max_len - len(xs) + 1) for xs in words]
+    input_ids = [xs[:-1] for xs in tokens]
+    labels = [xs[1:] for xs in tokens]
+
+    ds = Dataset.from_dict({"input_ids": input_ids, "labels": labels})
+    ds = ds.train_test_split(test_size=test_size)
+    return ds.with_format("torch"), vocab
