@@ -1,7 +1,8 @@
 import os
+from pathlib import Path
+import pickle
 
 import torch
-import tqdm
 from datasets import load_dataset, Dataset
 from transformers import AutoTokenizer
 
@@ -70,19 +71,29 @@ def get_repetition_task(seq_len: int = 256, vocab_size: int = 1000, num_samples:
     return ds.with_format("torch"), vocab_size
 
 
-def get_grid_task(max_seq_len: int = 256, grid_size: int = 6, num_samples: int = 250_000, test_size: float = 0.1, num_workers: int = 1):
-    grid_factory = GridFactory(size=grid_size)
-    samples = grid_factory.generate_samples(num_samples, show_progress=True, num_workers=num_workers)
-    words = [x.strip().split() for x in samples]
-    max_len = max(len(xs) for xs in words)
-    if max_len > max_seq_len:
-        raise ValueError(f"max_seq_len={max_seq_len} is too small for the grid task. The longest sequence is {max_len} words long.")
-    
-    vocab = ["<pad>"] + sorted(set([x for xs in words for x in xs]))
-    word_to_id = {w: i for i, w in enumerate(vocab)}
-    tokens = [[word_to_id[w]  for w in xs] + [word_to_id["<pad>"]] * (max_len - len(xs) + 1) for xs in words]
-    input_ids = [xs[:-1] for xs in tokens]
-    labels = [xs[1:] for xs in tokens]
+def get_grid_task(max_seq_len: int = 256, grid_size: int = 6, num_samples: int = 250_000, test_size: float = 0.1, num_workers: int = 1, use_cache: bool = True):
+    cache_file = Path(f"/tmp/barrel-rec/grid_task_{grid_size=}_{num_samples=}_{max_seq_len=}.pkl")
+    if use_cache and cache_file.exists():
+        with cache_file.open("rb") as f:
+            input_ids, labels, vocab = pickle.load(f)
+    else:
+        grid_factory = GridFactory(size=grid_size)
+        samples = grid_factory.generate_samples(num_samples, show_progress=True, num_workers=num_workers)
+        words = [x.strip().split() for x in samples]
+        max_len = max(len(xs) for xs in words)
+        if max_len > max_seq_len:
+            raise ValueError(f"max_seq_len={max_seq_len} is too small for the grid task. The longest sequence is {max_len} words long.")
+        
+        vocab = ["<pad>"] + sorted(set([x for xs in words for x in xs]))
+        word_to_id = {w: i for i, w in enumerate(vocab)}
+        tokens = [[word_to_id[w]  for w in xs] + [word_to_id["<pad>"]] * (max_len - len(xs) + 1) for xs in words]
+        input_ids = [xs[:-1] for xs in tokens]
+        labels = [xs[1:] for xs in tokens]
+
+        if use_cache:
+            cache_file.parent.mkdir(exist_ok=True, parents=True)
+            with cache_file.open("wb") as f:
+                pickle.dump((input_ids, labels, vocab), f)
 
     ds = Dataset.from_dict({"input_ids": input_ids, "labels": labels})
     ds = ds.train_test_split(test_size=test_size)
