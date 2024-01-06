@@ -3,9 +3,10 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
-from barrel_rec import BarrelRec
-from dumb_rec import DumbRec
 from qkv_attention import QKVAttention
+from dumb_rec import DumbRec
+from barrel_rec import BarrelRec
+from caterpillar import Caterpillar
 
 
 class MLP(nn.Module):
@@ -48,7 +49,7 @@ class TransformerLayer(nn.Module):
         mlp_dropout: float = 0.0,
         residual_dropout: float = 0.0,
         is_causal: bool = True,
-        attn_type: Literal["qkv", "dumb_rec", "barrel_rec"] = "qkv",
+        attn_type: Literal["qkv", "dumb_rec", "barrel_rec", "caterpillar"] = "qkv",
         ln_eps: float = 1e-8,
     ):
         super().__init__()
@@ -79,6 +80,17 @@ class TransformerLayer(nn.Module):
             if not is_causal:
                 raise ValueError("BarrelRec only supports causal attention")
             self.attention = BarrelRec(
+                d_model=d_model,
+                d_keys=d_model // num_attention_heads,
+                d_values=d_model // num_attention_heads,
+                num_attention_heads=num_attention_heads,
+                num_lines=num_lines,
+                attention_dropout=attention_dropout,
+            )
+        elif attn_type == "caterpillar":
+            if not is_causal:
+                raise ValueError("Caterpillar only supports causal attention")
+            self.attention = Caterpillar(
                 d_model=d_model,
                 d_keys=d_model // num_attention_heads,
                 d_values=d_model // num_attention_heads,
@@ -132,7 +144,7 @@ class Transformer(nn.Module):
         mlp_dropout: float = 0.0,
         residual_dropout: float = 0.0,
         is_causal: bool = True,
-        attn_type: Literal["qkv", "dumb_rec"] = "qkv",
+        attn_type: Literal["qkv", "dumb_rec", "barrel_rec", "caterpillar"] = "qkv",
         ln_eps: float = 1e-8,
     ):
         super().__init__()
