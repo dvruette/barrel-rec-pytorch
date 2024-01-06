@@ -24,7 +24,9 @@ def parse_args():
     parser.add_argument("--num_heads", type=int, default=8)
     parser.add_argument("--num_layers", type=int, default=6)
     parser.add_argument("--num_lines", type=int, default=128)
-    parser.add_argument("--attn_type", type=str, default="barrel_rec")
+    parser.add_argument("--caterpillar_length", type=int, default=8)
+    parser.add_argument("--caterpillar_height", type=int, default=8)
+    parser.add_argument("--attn_type", type=str, default="caterpillar")
     parser.add_argument("--attention_dropout", type=float, default=0.0)
     parser.add_argument("--mlp_dropout", type=float, default=0.0)
     parser.add_argument("--residual_dropout", type=float, default=0.0)
@@ -208,6 +210,8 @@ def main(args):
             num_attention_heads=args.num_heads,
             num_layers=args.num_layers,
             num_lines=args.num_lines,
+            caterpillar_length=args.caterpillar_length,
+            caterpillar_height=args.caterpillar_height,
             attention_dropout=args.attention_dropout,
             mlp_dropout=args.mlp_dropout,
             residual_dropout=args.residual_dropout,

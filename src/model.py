@@ -45,6 +45,8 @@ class TransformerLayer(nn.Module):
         mlp_expansion_factor: int,
         num_attention_heads: int,
         num_lines: int = 64,  # only used for dumb_rec
+        caterpillar_length: int = 8,  # only used for caterpillar
+        caterpillar_height: int = 64,  # only used for caterpillar
         attention_dropout: float = 0.0,
         mlp_dropout: float = 0.0,
         residual_dropout: float = 0.0,
@@ -95,7 +97,8 @@ class TransformerLayer(nn.Module):
                 d_keys=d_model // num_attention_heads,
                 d_values=d_model // num_attention_heads,
                 num_attention_heads=num_attention_heads,
-                num_lines=num_lines,
+                caterpillar_height=caterpillar_length,
+                caterpillar_length=caterpillar_height,
                 attention_dropout=attention_dropout,
             )
         else:
@@ -140,6 +143,8 @@ class Transformer(nn.Module):
         num_attention_heads: int = 8,
         num_layers: int = 6,
         num_lines: int = 64,  # only used for dumb_rec
+        caterpillar_length: int = 8,  # only used for caterpillar
+        caterpillar_height: int = 64,  # only used for caterpillar
         attention_dropout: float = 0.0,
         mlp_dropout: float = 0.0,
         residual_dropout: float = 0.0,
@@ -169,6 +174,8 @@ class Transformer(nn.Module):
                 mlp_expansion_factor=mlp_expansion_factor,
                 num_attention_heads=num_attention_heads,
                 num_lines=num_lines,
+                caterpillar_length=caterpillar_length,
+                caterpillar_height=caterpillar_height,
                 attention_dropout=attention_dropout,
                 mlp_dropout=mlp_dropout,
                 residual_dropout=residual_dropout,

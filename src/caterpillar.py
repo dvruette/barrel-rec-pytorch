@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from pscan import pscan
+import pscan
 
 
 def moving_window(x, dim, win_dim, win_size) -> torch.Tensor:
@@ -30,15 +30,20 @@ def pscan_dim(A, X, Y_init, dim=-2) -> torch.Tensor:
     s = X.size()
     a, T, b = s[:dim].numel(), s[dim], s[dim + 1 :].numel()
 
-    A = A.reshape(a, T, *s[dim + 1 : -1])
-    X = X.reshape(a, T, *s[dim + 1 : -1], -1)
+    A = A.reshape(a, T, *s[dim + 1 : -1]).transpose(1, 2)
+    X = X.reshape(a, T, *s[dim + 1 : -1], -1).transpose(1, 2)
+
+    l = X.shape[:2].numel()
+    A = A.reshape(l, T)
+    X = X.reshape(l, T, -1)
 
     if Y_init is None:
-        Y_init = X.new_zeros(a, *s[dim + 1 : -1], X.size(-1))
+        Y_init = X.new_zeros(l, X.size(-1))
     else:
-        Y_init = Y_init.reshape(a, *s[dim + 1 : -1], -1)
+        Y_init = Y_init.reshape(l, X.size(-1))
 
-    Y = pscan.pscan(A, X, Y_init).reshape(s)
+    res = pscan.pscan(A, X, Y_init)
+    Y = res.unflatten(0, (a, -1)).transpose(1, 2).reshape(s)
 
     return Y
 
@@ -89,19 +94,22 @@ class Caterpillar(nn.Module):
     def forward(self, X: torch.Tensor):
         N, T, _ = X.size()
 
-        t0, t1 = self.caterpillar_length, T + self.caterpillar_length
         cat_h = self.caterpillar_height
         cat_len = self.caterpillar_length
+        
+        # we need to pad to a multiple of cat_len
+        T_pad = ((T - 1) // cat_len + 1) * cat_len
+        X = F.pad(X, (0, 0, 0, T_pad - T), value=0.0)
+        
+        t0, t1 = cat_len, T_pad + cat_len  # first cat_len tokens are reserved for the initial state
 
-        assert (
-            t0 >= cat_len and (t1 - t0) % cat_len == 0
-        ), f"bs.first should be greater than caterpillar_length, and bs.nb should be a multiple of caterpillar_length"
+
 
         # NxExTxD where E is the index in the height (since H is already used for heads)
-        self.rec_V = X.new_zeros(N, cat_h, T, self.d_values)
-        self.rec_K = X.new_zeros(N, cat_h, T, self.d_keys)
-        self.rec_V[:, :, t0 - cat_len : t0] = self.init_V_rec[None, :, :, :]
-        self.rec_K[:, :, t0 - cat_len : t0] = self.init_K_rec[None, :, :, :]
+        rec_K = X.new_zeros(N, cat_h, t1, self.d_keys)
+        rec_V = X.new_zeros(N, cat_h, t1, self.d_values)
+        rec_K[:, :, t0 - cat_len : t0] = self.init_K_rec[None, :, :, :]
+        rec_V[:, :, t0 - cat_len : t0] = self.init_V_rec[None, :, :, :]
 
         ######################################################################
         # Compute the recurrent state
@@ -110,8 +118,8 @@ class Caterpillar(nn.Module):
             torch.einsum("ntd,hed->nhet", X, self.w_G) + self.b_G[None, :, :, None]
         ).sigmoid()
 
-        V = torch.einsum("ntc,hdc->nhtd", X, self.w_V)  # (bs, n_heads, ctx_len, d_values)
         K = torch.einsum("ntc,hdc->nhtd", X, self.w_K)  # (bs, n_heads, ctx_len, d_keys)
+        V = torch.einsum("ntc,hdc->nhtd", X, self.w_V)  # (bs, n_heads, ctx_len, d_values)
 
         A = 1 - G.sum(1)  # (bs, cat_h, ctx_len)
         gated_K = torch.einsum("nhet,nhtd->netd", G, K)  # (bs, cat_h, ctx_len, d_keys)
@@ -121,21 +129,24 @@ class Caterpillar(nn.Module):
         gated_K = gated_K.unflatten(2, (-1, cat_len))  # (bs, cat_h, ctx_len // cat_len, cat_len, d_keys)
         gated_V = gated_V.unflatten(2, (-1, cat_len))  # (bs, cat_h, ctx_len // cat_len, cat_len, d_values)
 
-        next_V = pscan_dim(A, gated_V, self.init_rec_V, dim=2)
-        next_K = pscan_dim(A, gated_K, self.init_rec_K, dim=2)
+        init_K = rec_K[:, :, t0 - cat_len : t0]
+        init_V = rec_V[:, :, t0 - cat_len : t0]
 
-        self.rec_V[:, :, t0:t1] = next_V.flatten(2, 3)  # (bs, cat_h, ctx_len, d_values)
-        self.rec_K[:, :, t0:t1] = next_K.flatten(2, 3)  # (bs, cat_h, ctx_len, d_keys)
+        next_K = pscan_dim(A, gated_K, init_K, dim=2)
+        next_V = pscan_dim(A, gated_V, init_V, dim=2)
+
+        rec_K[:, :, t0:t1] = next_K.flatten(2, 3)  # (bs, cat_h, ctx_len, d_keys)
+        rec_V[:, :, t0:t1] = next_V.flatten(2, 3)  # (bs, cat_h, ctx_len, d_values)
 
         ######################################################################
         # compute the readout
 
         Q = torch.einsum("ntc,hdc->nhtd", X, self.w_Q)
         uk = moving_window(
-            self.rec_K[:, :, t0 - cat_len + 1 : t1], dim=2, win_dim=3, win_size=cat_len
+            rec_K[:, :, t0 - cat_len + 1 : t1], dim=2, win_dim=3, win_size=cat_len
         )  # (bs, cat_h, ctx_len, cat_len, d_keys)
         uv = moving_window(
-            self.rec_V[:, :, t0 - cat_len + 1 : t1], dim=2, win_dim=3, win_size=cat_len
+            rec_V[:, :, t0 - cat_len + 1 : t1], dim=2, win_dim=3, win_size=cat_len
         )  # (bs, cat_h, ctx_len, cat_len, d_values)
 
         attn_scores = torch.einsum(
@@ -154,4 +165,5 @@ class Caterpillar(nn.Module):
         ).flatten(2)  # (bs, ctx_len, n_heads * d_values)
 
         output = Y @ self.w_O
+        output = output[:, :T]  # remove padding
         return output
