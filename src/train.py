@@ -1,5 +1,6 @@
 import json
 import os
+import math
 import time
 from argparse import ArgumentParser
 from datetime import datetime
@@ -34,6 +35,9 @@ def parse_args():
     parser.add_argument("--max_seq_len", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--warmup_steps", type=int, default=1e3)
+    parser.add_argument("--total_steps", type=int, default=1e5)
+    parser.add_argument("--lr_schedule", type=str, default="cosine")
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--adam_beta2", type=float, default=0.98)
     parser.add_argument("--adam_eps", type=float, default=1e-12)
@@ -74,6 +78,26 @@ def get_loss(model_type, model, batch, device):
 
     loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
     return loss
+
+
+def get_lr(schedule, max_lr, t, warmup_steps=1e3, total_steps=1e6, decay_amount=0.9):
+    t += 1
+    if t < warmup_steps:
+        return max_lr * t / warmup_steps
+    
+    if schedule == "cosine":
+        min_lr = max_lr * (1 - decay_amount)
+        if t > total_steps:
+            return min_lr
+        frac = (t - warmup_steps) / (total_steps - warmup_steps)
+        coeff = 0.5 * (1 + math.cos(frac * math.pi))
+        return min_lr + coeff * (max_lr - min_lr)
+    elif schedule == "rsqrt":
+        return min(max_lr, t ** -0.5)
+    elif schedule == "constant":
+        return max_lr
+    else:
+        raise ValueError(f"Unknown schedule: {schedule}")
 
 
 def generate(model_type, model, tokenizer, device, max_seq_len=256, max_new_tokens=256, batch_size=1, do_sample=True):
@@ -251,6 +275,7 @@ def main(args):
             stats["epoch"] = epoch
 
             for batch in train_dl:
+                
                 model.train()
                 start_time = time.time()
                 with torch.cuda.amp.autocast(dtype=dtype, enabled=args.dtype != "fp32"):
@@ -264,6 +289,13 @@ def main(args):
                         norms.append(p.grad.norm().float().item())
 
                 if (global_step + 1) % args.accumulate_grad_batches == 0:
+                    lr = get_lr(args.lr_schedule, args.lr, step, args.warmup_steps, args.total_steps)
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = lr
+
+                    # scaler.unscale_(optimizer)
+                    # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
                     scaler.step(optimizer)
                     scaler.update()
                     optimizer.zero_grad()
@@ -278,6 +310,7 @@ def main(args):
 
                     if args.wandb:
                         wandb.log({
+                            "learning_rate": lr,
                             "train_loss": loss.item(),
                             "train_loss_ema": stats["train_loss"],
                             "grad_norm": np.mean(norms),
