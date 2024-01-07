@@ -5,7 +5,7 @@
 
 # Written by Francois Fleuret <francois@fleuret.org>
 
-import torch, math
+import torch
 
 ######################################################################
 
@@ -45,7 +45,7 @@ class PScan(torch.autograd.Function):
         Aa = A[:, -T:].view(A.size(0), T // 2, 2, -1)
         Xa = X[:, -T:].view(X.size(0), T // 2, 2, -1)
         Xa[:, :, 0].add_(Aa[:, :, 1].mul(Xa[:, :, 1]))
-        B = Aa[:, :, 0].clone()
+        B = Aa[:, :, 0]#.clone()
         B[:, 1:].mul_(Aa[:, :-1, 1])
         PScan.acc_rev_(B, Xa[:, :, 0])
         Xa[:, :-1, 1].add_(Aa[:, 1:, 0].mul(Xa[:, 1:, 0]))
@@ -61,23 +61,31 @@ class PScan(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, A, X, Y_init):
-        ctx.A = A[:, :, None].clone()
-        ctx.Y_init = Y_init[:, None, :].clone()
-        ctx.A_star = ctx.A.clone()
-        ctx.X_star = X.clone()
-        PScan.expand_(ctx.A_star, ctx.X_star)
-        return ctx.A_star * ctx.Y_init + ctx.X_star
+        A_star = A.unsqueeze(-1).clone()
+        X_star = X.clone()
+        PScan.expand_(A_star, X_star)
+
+        ctx.save_for_backward(A_star, X_star, Y_init)
+        return A_star * Y_init.unsqueeze(1) + X_star
 
     @staticmethod
     def backward(ctx, grad_output):
-        # ppprint(grad_output)
-        U = grad_output * ctx.A_star
-        A = ctx.A.clone()
+        A_star, X_star, Y_init = ctx.saved_tensors
+        grad_A, grad_X, grad_Y_init = None, None, None
+
         R = grad_output.clone()
-        PScan.acc_rev_(A, R)
-        Q = ctx.Y_init.expand_as(ctx.X_star).clone()
-        Q[:, 1:].mul_(ctx.A_star[:, :-1]).add_(ctx.X_star[:, :-1])
-        return (Q * R).sum(-1), R, U.sum(dim=1)
+        PScan.acc_rev_(A_star, R)
+        
+        if ctx.needs_input_grad[0]:
+            Q = Y_init.unsqueeze(1).expand_as(X_star).clone()
+            Q[:, 1:].mul_(A_star[:, :-1]).add_(X_star[:, :-1])
+            grad_A = (Q * R).sum(-1)
+        if ctx.needs_input_grad[1]:
+            grad_X = R
+        if ctx.needs_input_grad[2]:
+            grad_Y_init = (grad_output * A_star).sum(dim=1)
+
+        return grad_A, grad_X, grad_Y_init
 
 
 pscan = PScan.apply

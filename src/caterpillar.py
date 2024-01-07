@@ -26,28 +26,6 @@ def moving_window(x, dim, win_dim, win_size) -> torch.Tensor:
     return x.as_strided(size=size, stride=stride)
 
 
-def pscan_dim(A, X, Y_init, dim=-2) -> torch.Tensor:
-    s = X.size()
-    a, T, b = s[:dim].numel(), s[dim], s[dim + 1 :].numel()
-
-    A = A.reshape(a, T, *s[dim + 1 : -1]).transpose(1, 2)
-    X = X.reshape(a, T, *s[dim + 1 : -1], -1).transpose(1, 2)
-
-    l = X.shape[:2].numel()
-    A = A.reshape(l, T)
-    X = X.reshape(l, T, -1)
-
-    if Y_init is None:
-        Y_init = X.new_zeros(l, X.size(-1))
-    else:
-        Y_init = Y_init.reshape(l, X.size(-1))
-
-    res = pscan.pscan(A, X, Y_init)
-    Y = res.unflatten(0, (a, -1)).transpose(1, 2).reshape(s)
-
-    return Y
-
-
 class Caterpillar(nn.Module):
     def __init__(
         self,
@@ -91,6 +69,22 @@ class Caterpillar(nn.Module):
         self.init_K_rec = randw(caterpillar_height, caterpillar_length, d_keys)
         self.init_V_rec = randw(caterpillar_height, caterpillar_length, d_values)
 
+    def _pscan(self, A, X, Y_init) -> torch.Tensor:
+        # A: (bs, cat_h, cat_len, ctx_len // cat_len)
+        # X: (bs, cat_h, cat_len, ctx_len // cat_len, dim)
+        # Y_init: (bs, cat_h, cat_len, dim)
+
+        s = X.size()
+        l, T = s[:3].numel(), s[-2]
+        A = A.reshape(l, T)
+        X = X.reshape(l, T, -1)
+        Y_init = Y_init.reshape(l, -1)
+
+        res = pscan.pscan(A, X, Y_init)  # (l, T, dim)
+        Y = res.view(s)
+
+        return Y
+
     def forward(self, X: torch.Tensor):
         N, T, _ = X.size()
 
@@ -102,8 +96,6 @@ class Caterpillar(nn.Module):
         X = F.pad(X, (0, 0, 0, T_pad - T), value=0.0)
         
         t0, t1 = cat_len, T_pad + cat_len  # first cat_len tokens are reserved for the initial state
-
-
 
         # NxExTxD where E is the index in the height (since H is already used for heads)
         rec_K = X.new_zeros(N, cat_h, t1, self.d_keys)
@@ -125,15 +117,15 @@ class Caterpillar(nn.Module):
         gated_K = torch.einsum("nhet,nhtd->netd", G, K)  # (bs, cat_h, ctx_len, d_keys)
         gated_V = torch.einsum("nhet,nhtd->netd", G, V)  # (bs, cat_h, ctx_len, d_values)
 
-        A = A.unflatten(2, (-1, cat_len))  # (bs, cat_h, ctx_len // cat_len, cat_len)
-        gated_K = gated_K.unflatten(2, (-1, cat_len))  # (bs, cat_h, ctx_len // cat_len, cat_len, d_keys)
-        gated_V = gated_V.unflatten(2, (-1, cat_len))  # (bs, cat_h, ctx_len // cat_len, cat_len, d_values)
+        A = A.unflatten(2, (cat_len, -1))  # (bs, cat_h, cat_len, ctx_len // cat_len)
+        gated_K = gated_K.unflatten(2, (cat_len, -1))  # (bs, cat_h, cat_len, ctx_len // cat_len, d_keys)
+        gated_V = gated_V.unflatten(2, (cat_len, -1))  # (bs, cat_h, cat_len, ctx_len // cat_len, d_values)
 
         init_K = rec_K[:, :, t0 - cat_len : t0]
         init_V = rec_V[:, :, t0 - cat_len : t0]
 
-        next_K = pscan_dim(A, gated_K, init_K, dim=2)
-        next_V = pscan_dim(A, gated_V, init_V, dim=2)
+        next_K = self._pscan(A, gated_K, init_K)
+        next_V = self._pscan(A, gated_V, init_V)
 
         rec_K[:, :, t0:t1] = next_K.flatten(2, 3)  # (bs, cat_h, ctx_len, d_keys)
         rec_V[:, :, t0:t1] = next_V.flatten(2, 3)  # (bs, cat_h, ctx_len, d_values)
