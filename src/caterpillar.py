@@ -78,7 +78,7 @@ class Caterpillar(nn.Module):
         self.w_G = randw(num_attention_heads, caterpillar_height, d_model)
         self.b_G = nn.Parameter(
             torch.full(
-                (num_attention_heads, caterpillar_height), -math.log(caterpillar_height - 1)
+                (num_attention_heads, caterpillar_height), fill_value=-num_attention_heads**0.5, dtype=torch.float32
             )
         )
 
