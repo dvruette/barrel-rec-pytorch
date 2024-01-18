@@ -20,6 +20,7 @@ from data import get_shakespeare, get_wikitext, get_repetition_task, get_slim_pa
 def parse_args():
     parser = ArgumentParser()
     parser.add_argument("--dataset", type=str, default="wikitext")
+    parser.add_argument("--grid_test_split", type=float, default=0.1)
     parser.add_argument("--d_model", type=int, default=512)
     parser.add_argument("--mlp_expansion_factor", type=int, default=4)
     parser.add_argument("--num_heads", type=int, default=8)
@@ -202,7 +203,7 @@ def main(args):
     elif args.dataset == "repetition":
         ds, vocab_size = get_repetition_task(args.max_seq_len)
     elif args.dataset == "grid":
-        ds, vocab = get_grid_task(args.max_seq_len, num_workers=min(32, os.cpu_count()), num_samples=100_000)
+        ds, vocab = get_grid_task(args.max_seq_len, num_workers=min(32, os.cpu_count()), num_samples=100_000, test_size=args.grid_test_split)
         vocab_size = len(vocab)
         ans_token_id = vocab.index("<ans>")
     else:
