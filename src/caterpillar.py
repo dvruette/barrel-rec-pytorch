@@ -113,7 +113,7 @@ class Caterpillar(nn.Module):
         K = torch.einsum("ntc,hdc->nhtd", X, self.w_K)  # (bs, n_heads, ctx_len, d_keys)
         V = torch.einsum("ntc,hdc->nhtd", X, self.w_V)  # (bs, n_heads, ctx_len, d_values)
 
-        A = 1 - G.sum(1)  # (bs, cat_h, ctx_len)
+        A = 1 - G.sum(1).clip(max=1)  # (bs, cat_h, ctx_len)
         gated_K = torch.einsum("nhet,nhtd->netd", G, K)  # (bs, cat_h, ctx_len, d_keys)
         gated_V = torch.einsum("nhet,nhtd->netd", G, V)  # (bs, cat_h, ctx_len, d_values)
 
